@@ -32,11 +32,13 @@ Replace `|` with `\x1f` (ASCII Unit Separator, `$'\x1f'` in bash). This characte
 - `clean_stale_entries`: Change `cut -d'|'` to `cut -d$'\x1f'`
 
 **Existing test files (`tests/test_phase{1,3,4}.sh`):**
-- Update any assertions that construct or match `|`-delimited queue lines to use `\x1f`
+- `test_phase1.sh`: Update queue assertion lines that match `|`-delimited content to use `\x1f`
+- `test_phase3.sh`: Update any raw queue format assertions to use `\x1f`
+- `test_phase4.sh`: Update line 150 which manually constructs a stale queue entry with `|` delimiters (`echo "${old_ts}|%99|..."`) to use `\x1f`
 - Phase 2 and Phase 5 tests don't interact with the raw queue format and need no changes
 
 **No changes to:**
-- `notification-handler.sh` (calls `queue_push`, doesn't construct the format)
+- `notification-handler.sh` (calls `queue_push`, doesn't construct the format directly; note: message content could theoretically contain `\x1f` but this is practically impossible since it's a non-printable control character)
 - `popup-manager.sh` (calls `parse_*` functions, doesn't parse directly)
 - `popup-interactive.sh` (doesn't read the queue)
 - `variables.sh`, `detect-pane.sh`, `setup.sh`, `status-count.sh`
@@ -84,7 +86,7 @@ Source `popup-interactive.sh`'s spinner array definition, then test the matching
 
 1. `--configure` with no existing `settings.json` → pipe "y" → verify file created from scratch with `.hooks.Notification` and `.hooks.Stop`
 2. `--configure` user answers "n" → verify settings.json unchanged (or not created)
-3. `--check-only` when hooks ARE configured → verify exit code 0 and no tmux display-message called (capture tmux messages via a wrapper or check exit silently)
+3. `--check-only` when hooks ARE configured → verify exit code 0, and verify no warning was shown by wrapping `tmux display-message` in a mock that writes to a marker file — assert marker file was NOT created
 
 ## Part 3: Component Test Layer (`tests/test_component.sh`)
 
@@ -102,11 +104,11 @@ Run `popup-interactive.sh` in a test pane (not inside `display-popup`), pointing
 **Tests:**
 
 1. **Render test**: Target pane echoes `HELLO_MARKER_12345` → capture popup pane → verify marker appears in output
-2. **Input forwarding**: Target pane runs `read line && echo "$line" > /tmp/test-canary-$$` → send "yes" + Enter to popup pane → wait → verify canary file contains "yes"
+2. **Input forwarding**: Target pane runs `read line && echo "$line" > /tmp/test-canary-$$` (where `$$` is the test runner's PID, so the test can find the file) → send "yes" + Enter to popup pane → poll for canary file with 0.5s intervals up to 5s timeout → verify canary contains "yes"
 3. **Escape dismissal**: Send Escape key to popup pane → wait up to 2s → verify popup-interactive.sh process exited
-4. **Backspace handling**: Target pane runs `read line && echo "$line" > /tmp/test-canary-$$` → send "abc" then Backspace then Enter to popup pane → verify canary contains "ab"
+4. **Backspace handling**: Target pane runs `read line && echo "$line" > /tmp/test-canary-$$` → send "abc" then Backspace then Enter to popup pane → poll for canary file with 0.5s intervals up to 5s timeout → verify canary contains "ab"
 5. **Dead pane auto-close**: Kill target pane → verify popup-interactive.sh exits within 3 seconds
-6. **Spinner auto-close**: Target pane echoes a spinner char `⠋` → verify popup-interactive.sh exits within 2 seconds (2 × refresh interval + buffer)
+6. **Spinner auto-close**: Explicitly set `@claude-notify-refresh-interval` to `0.5` → target pane echoes a spinner char `⠋` → verify popup-interactive.sh exits within 3 seconds (allows for initial render + 2 refresh cycles + buffer)
 
 ### Concurrent Notification Handlers (1 test)
 
@@ -114,7 +116,7 @@ Run `popup-interactive.sh` in a test pane (not inside `display-popup`), pointing
 
 ### Multi-Entry Popup Manager (1 test)
 
-8. Push 3 entries for a valid pane → run `popup-manager.sh` → since `display-popup` fails without a real client, verify all 3 entries were consumed (queue empty)
+8. Push 3 entries for a valid pane → run `popup-manager.sh` → since `display-popup` fails without a real client, verify all 3 entries were consumed (queue empty). Note: this is a degraded-mode test — it verifies the manager's error-recovery loop continues processing after `display-popup` failures, not actual popup rendering
 
 ### Notification Handler Pane Fallback (1 test)
 
@@ -198,6 +200,11 @@ Full-flow scenarios in a real tmux session with multiple panes/windows. 6 scenar
 - Each test file gets a 60-second timeout (`timeout 60 bash test_file.sh`)
 - If a test hangs, it's killed and reported as a failure with "TIMEOUT" in the summary
 
+### Error Handling
+
+- If a test file does not exist, the runner reports it as "SKIP (not found)" and continues
+- This supports incremental development — new test files can be added one at a time
+
 ### Output Format
 
 ```
@@ -237,8 +244,8 @@ TOTAL: 114 passed, 0 failed
 
 ## Estimated Totals
 
-- **Existing tests**: 71 (phases 1–5, updated for `\x1f` delimiter)
+- **Existing tests**: ~71 (phases 1–5, updated for `\x1f` delimiter; exact count may vary by 1-2 due to conditional test paths)
 - **New tests**: ~43 (18 unit + 10 component + 15 integration)
 - **Grand total**: ~114 automated tests
 - **New files**: 4 (`test_unit.sh`, `test_component.sh`, `test_integration.sh`, `run_all.sh`)
-- **Modified files**: 3 (`helpers.sh` delimiter fix, `test_phase1.sh`, `test_phase3.sh` delimiter assertions)
+- **Modified files**: 4 (`helpers.sh` delimiter fix, `test_phase1.sh`, `test_phase3.sh`, `test_phase4.sh` delimiter assertions)
