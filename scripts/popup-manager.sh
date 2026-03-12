@@ -93,19 +93,30 @@ _process_queue() {
         window_info=$(tmux display-message -t "$pane_id" -p '#{window_name}:#{pane_index}' 2>/dev/null || echo "?:?")
         local popup_title=" Claude: ${event_type} | ${window_info} "
 
+        # Find the most recently active client to display the popup on
+        local target_client
+        target_client=$(tmux list-clients -F '#{client_activity} #{client_name}' 2>/dev/null \
+            | sort -rn | head -1 | cut -d' ' -f2-)
+
         # Open display-popup with interactive script
         # -E flag: close popup when the command exits
-        # The popup runs popup-interactive.sh which handles capture/display/input
-        tmux display-popup \
-            -w "$width" \
-            -h "$height" \
-            -b "$border" \
-            -T "$popup_title" \
-            -E \
-            "bash '${SCRIPT_DIR}/popup-interactive.sh' '${pane_id}' '${event_type}' '${message}'" \
-            2>/dev/null || {
-                log_debug "popup-manager: display-popup failed for pane=$pane_id"
-            }
+        # -c flag: target a specific client (avoids wrong-client failures)
+        local popup_cmd="bash '${SCRIPT_DIR}/popup-interactive.sh' '${pane_id}' '${event_type}' '${message}'"
+        if [[ -n "$target_client" ]]; then
+            tmux display-popup -c "$target_client" \
+                -w "$width" -h "$height" -b "$border" \
+                -T "$popup_title" -E "$popup_cmd" \
+                2>/dev/null || {
+                    log_debug "popup-manager: display-popup failed for pane=$pane_id (client=$target_client)"
+                }
+        else
+            tmux display-popup \
+                -w "$width" -h "$height" -b "$border" \
+                -T "$popup_title" -E "$popup_cmd" \
+                2>/dev/null || {
+                    log_debug "popup-manager: display-popup failed for pane=$pane_id (no client)"
+                }
+        fi
 
         # Popup closed — clear active pane and process next entry
         clear_active_pane
