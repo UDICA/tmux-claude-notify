@@ -45,8 +45,18 @@ Tmux plugin that shows interactive popups when Claude Code needs permission appr
 - [x] Task 7.1: README.md — Status: completed
 - [x] Task 7.2: LICENSE — MIT — Status: completed
 
+## Phase 8: Comprehensive Test Plan
+### Tasks
+- [x] Task 8.1: Fix queue delimiter `|` → `\x1f` in helpers.sh — Status: completed — Commit: fb8a650
+- [x] Task 8.2: Update test_phase4.sh stale entry delimiter — Status: completed — Commit: 9a2bb85
+- [x] Task 8.3: `tests/run_all.sh` — test runner with timeouts, filtering, aggregate reporting — Status: completed — Commit: d054746
+- [x] Task 8.4: `tests/test_unit.sh` — 21 tests: macOS locking/PID mocks, queue edge cases, spinner detection, setup branches — Status: completed — Commit: d054746
+- [x] Task 8.5: `tests/test_component.sh` — 15 tests: popup-interactive TUI, concurrent handlers, multi-entry manager, pane fallback, bell — Status: completed — Commit: d054746
+- [x] Task 8.6: `tests/test_integration.sh` — 19 tests: full lifecycle, FIFO ordering, mixed cleanup, reattach recovery, disable toggle, setup round-trip — Status: completed — Commit: d054746
+
 ## Current Status
 - **Active phase**: Complete
 - **All phases**: Done
-- **Total tests**: 71 (29 + 9 + 8 + 11 + 14)
+- **Total tests**: 126 (29 + 9 + 8 + 11 + 14 + 21 + 15 + 19)
+- **Coverage gaps closed**: 13/13
 - **Blockers**: none
