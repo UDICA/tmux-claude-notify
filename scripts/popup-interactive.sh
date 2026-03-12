@@ -151,6 +151,11 @@ set_active_pane "$TARGET_PANE"
 # Show cursor
 printf '\033[?25h'
 
+# Flush any buffered input from terminal/popup setup
+# (display-popup can send escape sequences that would trigger immediate dismiss)
+sleep 0.3
+while IFS= read -rsn1 -t 0.01 _discard; do :; done
+
 # Initial render
 _render
 
