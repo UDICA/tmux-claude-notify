@@ -147,7 +147,8 @@ echo "--- Stale Entry Cleanup ---"
 old_ts=$(($(date +%s) - 600))  # 10 minutes ago, TTL is 300
 ensure_queue_dir
 acquire_lock
-echo "${old_ts}|%99|permission|s1|old entry" >> "$(_queue_file)"
+sep=$'\x1f'
+echo "${old_ts}${sep}%99${sep}permission${sep}s1${sep}old entry" >> "$(_queue_file)"
 release_lock
 
 count_before=$(queue_count)
