@@ -14,24 +14,31 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/helpers.sh"
 
-# --- Single-instance guard ---
+# --- Single-instance guard (atomic via lock) ---
+
+_try_acquire_singleton() {
+    # Atomic check-and-register under lock to prevent TOCTOU race
+    acquire_lock
+    if is_popup_manager_running; then
+        release_lock
+        return 1
+    fi
+    set_popup_manager_pid $$
+    release_lock
+    return 0
+}
 
 if [[ "${1:-}" == "--recheck" ]]; then
-    # Just trigger a check — if manager is running, it will pick up the queue
     if is_popup_manager_running; then
         log_debug "popup-manager: --recheck, manager already running"
         exit 0
     fi
-    # Otherwise fall through to start manager
 fi
 
-if is_popup_manager_running; then
+if ! _try_acquire_singleton; then
     log_debug "popup-manager: already running, exiting"
     exit 0
 fi
-
-# Register ourselves
-set_popup_manager_pid $$
 
 _cleanup() {
     clear_popup_manager_pid

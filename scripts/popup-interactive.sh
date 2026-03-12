@@ -31,7 +31,7 @@ fi
 REFRESH_INTERVAL=$(get_option "$OPTION_REFRESH_INTERVAL" "$DEFAULT_REFRESH_INTERVAL")
 
 # Spinner characters indicating Claude is working (not waiting for input)
-SPINNER_CHARS='[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]'
+SPINNER_CHARS=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 
 # State
 LINE_BUFFER=""
@@ -96,11 +96,15 @@ _check_pane_alive() {
 
 _check_resumed() {
     # Check if last capture contains spinner characters → Claude is working
+    # Uses bash array + pattern matching (portable, no grep -P needed)
     if [[ -n "$LAST_CAPTURE" ]]; then
-        if echo "$LAST_CAPTURE" | grep -qP "$SPINNER_CHARS"; then
-            log_debug "popup-interactive: detected spinner, Claude resumed"
-            return 0  # resumed
-        fi
+        local char
+        for char in "${SPINNER_CHARS[@]}"; do
+            if [[ "$LAST_CAPTURE" == *"$char"* ]]; then
+                log_debug "popup-interactive: detected spinner, Claude resumed"
+                return 0  # resumed
+            fi
+        done
     fi
     return 1  # not resumed
 }

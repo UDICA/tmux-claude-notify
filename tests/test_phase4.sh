@@ -160,17 +160,25 @@ assert "stale entry removed" '[[ "$count_after" -lt "$count_before" ]]'
 echo ""
 echo "--- Resume Detection ---"
 
-# Spinner pattern from popup-interactive.sh
-local_spinner='[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]'
+# Spinner chars from popup-interactive.sh (bash array, portable)
+local_spinners=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+
+_has_spinner() {
+    local text="$1"
+    for c in "${local_spinners[@]}"; do
+        [[ "$text" == *"$c"* ]] && return 0
+    done
+    return 1
+}
 
 test_spinner='Some output ⠋ Processing...'
-assert "spinner detected in text" 'echo "$test_spinner" | grep -qP "$local_spinner"'
+assert "spinner detected in text" '_has_spinner "$test_spinner"'
 
 test_no_spinner='Some output without spinner'
-assert "no spinner in normal text" '! echo "$test_no_spinner" | grep -qP "$local_spinner"'
+assert "no spinner in normal text" '! _has_spinner "$test_no_spinner"'
 
 test_waiting='? Allow Bash tool? (y/n)'
-assert "no spinner in permission prompt" '! echo "$test_waiting" | grep -qP "$local_spinner"'
+assert "no spinner in permission prompt" '! _has_spinner "$test_waiting"'
 
 echo ""
 echo "================================"
