@@ -88,6 +88,11 @@ _process_queue() {
         height=$(get_option "$OPTION_POPUP_HEIGHT" "$DEFAULT_POPUP_HEIGHT")
         border=$(get_option "$OPTION_POPUP_BORDER" "$DEFAULT_POPUP_BORDER")
 
+        # Resolve window name and pane index for a descriptive title
+        local window_info
+        window_info=$(tmux display-message -t "$pane_id" -p '#{window_name}:#{pane_index}' 2>/dev/null || echo "?:?")
+        local popup_title=" Claude: ${event_type} | ${window_info} "
+
         # Open display-popup with interactive script
         # -E flag: close popup when the command exits
         # The popup runs popup-interactive.sh which handles capture/display/input
@@ -95,7 +100,7 @@ _process_queue() {
             -w "$width" \
             -h "$height" \
             -b "$border" \
-            -T " Claude: ${event_type} " \
+            -T "$popup_title" \
             -E \
             "bash '${SCRIPT_DIR}/popup-interactive.sh' '${pane_id}' '${event_type}' '${message}'" \
             2>/dev/null || {

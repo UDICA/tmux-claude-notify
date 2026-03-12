@@ -56,11 +56,13 @@ _render() {
         content_rows=1
     fi
 
-    # Clear screen
-    printf '\033[2J\033[H'
+    # Move cursor home (no screen clear — avoids flicker)
+    printf '\033[H'
 
-    # Header
-    local header=" Claude Notification: ${EVENT_TYPE} | Pane: ${TARGET_PANE} "
+    # Header — show window name + pane index for identification
+    local window_info
+    window_info=$(tmux display-message -t "$TARGET_PANE" -p '#{window_name}:#{pane_index}' 2>/dev/null || echo "?:?")
+    local header=" ${EVENT_TYPE} | ${window_info} (${TARGET_PANE}) "
     printf '\033[7m'  # reverse video
     printf "%-${cols}s" "$header"
     printf '\033[0m\n'
@@ -68,14 +70,24 @@ _render() {
     # Capture target pane content (with ANSI colors)
     local capture
     capture=$(tmux capture-pane -t "$TARGET_PANE" -p -e -S "-${content_rows}" 2>/dev/null) || {
+        printf '\033[2J\033[H'
         printf '\033[31mPane %s no longer exists\033[0m\n' "$TARGET_PANE"
         sleep 1
         exit 0
     }
     LAST_CAPTURE="$capture"
 
-    # Display captured content (last N lines)
-    echo "$capture" | tail -n "$content_rows"
+    # Display captured content (last N lines, each line padded to clear previous content)
+    local line_num=0
+    while IFS= read -r line; do
+        printf '%s\033[K\n' "$line"
+        ((line_num++))
+    done < <(echo "$capture" | tail -n "$content_rows")
+    # Clear any remaining lines from previous render
+    while ((line_num < content_rows)); do
+        printf '\033[K\n'
+        ((line_num++))
+    done
 
     # Move to bottom area
     printf '\033[%d;1H' "$((rows - 1))"
@@ -87,7 +99,7 @@ _render() {
 
     # Input prompt
     printf '\033[%d;1H' "$rows"
-    printf '\033[1m> \033[0m%s' "$LINE_BUFFER"
+    printf '\033[1m> \033[0m%s\033[K' "$LINE_BUFFER"
 }
 
 _check_pane_alive() {
@@ -142,7 +154,8 @@ _render
 
 while true; do
     # Read a single character with timeout
-    if read -rsn1 -t "$REFRESH_INTERVAL" char; then
+    # IFS= prevents space/tab from being stripped by read
+    if IFS= read -rsn1 -t "$REFRESH_INTERVAL" char; then
         case "$char" in
             $'\e')  # Escape key — dismiss popup
                 log_debug "popup-interactive: dismissed by user"
