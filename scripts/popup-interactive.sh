@@ -124,9 +124,11 @@ _check_resumed() {
 _send_line() {
     local line="$1"
     if [[ -n "$line" ]]; then
-        # Send the text literally, then press Enter
-        tmux send-keys -t "$TARGET_PANE" -l "$line"
-        tmux send-keys -t "$TARGET_PANE" Enter
+        # Send text + newline as a single literal string
+        # Using -l with embedded newline avoids tmux interpreting "Enter"
+        # as a key name (which can trigger copy-mode in vi-mode setups)
+        tmux send-keys -t "$TARGET_PANE" -l "${line}
+"
         log_debug "popup-interactive: sent line to $TARGET_PANE: $line"
     fi
 }
