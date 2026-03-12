@@ -113,7 +113,7 @@ ensure_queue_dir() {
 }
 
 # --- Queue Operations ---
-# Format: timestamp|pane_id|event_type|session_id|message
+# Format: timestamp\x1fpane_id\x1fevent_type\x1fsession_id\x1fmessage
 
 queue_push() {
     local pane_id="$1"
@@ -122,10 +122,11 @@ queue_push() {
     local message="$4"
     local timestamp
     timestamp=$(date +%s)
+    local sep=$'\x1f'
 
     ensure_queue_dir
     acquire_lock
-    echo "${timestamp}|${pane_id}|${event_type}|${session_id}|${message}" >> "$(_queue_file)"
+    echo "${timestamp}${sep}${pane_id}${sep}${event_type}${sep}${session_id}${sep}${message}" >> "$(_queue_file)"
     release_lock
     log_debug "queue_push: pane=$pane_id type=$event_type session=$session_id"
 }
@@ -216,8 +217,8 @@ clean_stale_entries() {
 
     while IFS= read -r line; do
         local ts pane_id
-        ts=$(echo "$line" | cut -d'|' -f1)
-        pane_id=$(echo "$line" | cut -d'|' -f2)
+        ts=$(echo "$line" | cut -d$'\x1f' -f1)
+        pane_id=$(echo "$line" | cut -d$'\x1f' -f2)
 
         # Skip if expired
         if (( now - ts > stale_ttl )); then
@@ -290,7 +291,7 @@ clear_popup_manager_pid() {
 parse_field() {
     local line="$1"
     local field="$2"  # 1-based
-    echo "$line" | cut -d'|' -f"$field"
+    echo "$line" | cut -d$'\x1f' -f"$field"
 }
 
 parse_timestamp() { parse_field "$1" 1; }
