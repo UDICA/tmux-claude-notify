@@ -38,12 +38,17 @@ _has_hook_configured() {
         return 1
     fi
     # Check if our handler is already referenced in hooks
+    # Supports both old format (.command at top level) and new format (.hooks[].command)
     jq -e '
         (.hooks // {}) |
         to_entries[] |
         .value[] |
-        select(.command != null) |
-        .command |
+        (
+            # New format: matcher + hooks array
+            (.hooks // [] | .[].command // empty),
+            # Old format: matcher + command
+            (.command // empty)
+        ) |
         test("notification-handler")
     ' "$settings_file" &>/dev/null
 }
@@ -62,13 +67,9 @@ _show_manual_instructions() {
       "Notification": [
         {
           "matcher": "",
-          "command": "${HANDLER_PATH}"
-        }
-      ],
-      "Stop": [
-        {
-          "matcher": "",
-          "command": "${HANDLER_PATH}"
+          "hooks": [
+            {"type": "command", "command": "${HANDLER_PATH}"}
+          ]
         }
       ]
     }
@@ -152,13 +153,9 @@ _configure() {
   "Notification": [
     {
       "matcher": "",
-      "command": "${HANDLER_PATH}"
-    }
-  ],
-  "Stop": [
-    {
-      "matcher": "",
-      "command": "${HANDLER_PATH}"
+      "hooks": [
+        {"type": "command", "command": "${HANDLER_PATH}"}
+      ]
     }
   ]
 }
