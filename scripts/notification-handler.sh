@@ -85,6 +85,11 @@ fi
 
 if ! is_popup_manager_running; then
     log_debug "notification-handler: launching popup-manager"
-    nohup bash "${SCRIPT_DIR}/popup-manager.sh" </dev/null >/dev/null 2>&1 &
-    disown
+    # Use tmux run-shell so popup-manager has client context for display-popup
+    # (nohup/disown detaches from the client, causing display-popup to fail)
+    tmux run-shell -b "bash '${SCRIPT_DIR}/popup-manager.sh'" 2>/dev/null || {
+        # Fallback to nohup if tmux run-shell fails
+        nohup bash "${SCRIPT_DIR}/popup-manager.sh" </dev/null >/dev/null 2>&1 &
+        disown
+    }
 fi
