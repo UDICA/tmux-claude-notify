@@ -82,6 +82,20 @@ _process_queue() {
             continue
         fi
 
+        # If the target pane is in the currently visible window, don't show a popup.
+        # display-popup on the same window can disrupt the pane's terminal state
+        # (e.g., Claude Code's TUI alternate screen → copy mode).
+        # Instead, show a brief tmux message — the user can already see Claude waiting.
+        local pane_window_id current_window_id
+        pane_window_id=$(tmux display-message -t "$pane_id" -p '#{window_id}' 2>/dev/null)
+        current_window_id=$(tmux display-message -p '#{window_id}' 2>/dev/null)
+        if [[ "$pane_window_id" == "$current_window_id" ]]; then
+            log_debug "popup-manager: pane $pane_id is in current window, using message instead of popup"
+            tmux display-message "Claude needs attention in pane ${pane_id} (${event_type})" 2>/dev/null || true
+            sleep 0.2
+            continue
+        fi
+
         # Read popup dimensions from options
         local width height border
         width=$(get_option "$OPTION_POPUP_WIDTH" "$DEFAULT_POPUP_WIDTH")
@@ -101,22 +115,69 @@ _process_queue() {
         # Open display-popup with interactive script
         # -E flag: close popup when the command exits
         # -c flag: target a specific client (avoids wrong-client failures)
-        local popup_cmd="bash '${SCRIPT_DIR}/popup-interactive.sh' '${pane_id}' '${event_type}' '${message}'"
+        local popup_cmd="bash '${SCRIPT_DIR}/popup-interactive.sh' '${pane_id}' '${event_type}' '${message}' '${session_id}'"
+        local intent_file="${QUEUE_DIR}/popup-intent"
+        rm -f "$intent_file"
+
         if [[ -n "$target_client" ]]; then
             tmux display-popup -c "$target_client" \
                 -w "$width" -h "$height" -b "$border" \
                 -T "$popup_title" -E "$popup_cmd" \
-                2>/dev/null || {
-                    log_debug "popup-manager: display-popup failed for pane=$pane_id (client=$target_client)"
-                }
+                2>/dev/null || true
         else
             tmux display-popup \
                 -w "$width" -h "$height" -b "$border" \
                 -T "$popup_title" -E "$popup_cmd" \
-                2>/dev/null || {
-                    log_debug "popup-manager: display-popup failed for pane=$pane_id (no client)"
-                }
+                2>/dev/null || true
         fi
+
+        # Read intent from file (popup always exits 0 to avoid escape leakage)
+        local intent="dismiss"
+        if [[ -f "$intent_file" ]]; then
+            intent=$(cat "$intent_file")
+            rm -f "$intent_file"
+        fi
+
+        case "$intent" in
+            switch)
+                # Switch after popup is fully closed to avoid teardown interference
+                sleep 0.3
+                # Exit copy mode if the hook trigger caused it
+                local in_mode
+                in_mode=$(tmux display-message -t "$pane_id" -p '#{pane_in_mode}' 2>/dev/null || echo "0")
+                if [[ "$in_mode" == "1" ]]; then
+                    tmux send-keys -t "$pane_id" q 2>/dev/null || true
+                    log_debug "popup-manager: exited copy mode on pane $pane_id"
+                    sleep 0.2
+                fi
+                local target_window
+                target_window=$(tmux display-message -t "$pane_id" -p '#{session_name}:#{window_index}' 2>/dev/null || true)
+                if [[ -n "$target_window" ]]; then
+                    tmux select-window -t "$target_window" 2>/dev/null || true
+                    tmux select-pane -t "$pane_id" 2>/dev/null || true
+                fi
+                log_debug "popup-manager: switched to $target_window pane $pane_id"
+                ;;
+            snooze)
+                local snooze_file="${QUEUE_DIR}/snooze-request"
+                local snooze_secs=30
+                if [[ -f "$snooze_file" ]]; then
+                    snooze_secs=$(cat "$snooze_file")
+                    rm -f "$snooze_file"
+                fi
+                log_debug "popup-manager: snooze ${snooze_secs}s for pane $pane_id"
+                (
+                    sleep "$snooze_secs"
+                    source "${SCRIPT_DIR}/helpers.sh"
+                    queue_push "$pane_id" "$event_type" "$session_id" "$message"
+                    tmux run-shell -b "bash '${SCRIPT_DIR}/popup-manager.sh'" 2>/dev/null || true
+                ) &
+                disown
+                ;;
+            *)
+                log_debug "popup-manager: popup dismissed for pane=$pane_id"
+                ;;
+        esac
 
         # Popup closed — clear active pane and process next entry
         clear_active_pane

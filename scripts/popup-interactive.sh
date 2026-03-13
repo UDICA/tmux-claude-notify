@@ -1,205 +1,206 @@
 #!/usr/bin/env bash
 # popup-interactive.sh — Runs inside tmux display-popup
 #
-# Captures target pane content (with colors) at regular intervals,
-# displays it in the popup, and accepts user input at the bottom.
+# Shows a read-only preview of the target pane and offers actions:
+#   Enter   — switch to Claude's window (exit 10)
+#   Escape  — dismiss popup (exit 0)
+#   q       — dismiss popup (exit 0)
+#   s       — cycle snooze duration, Enter to confirm (exit 20)
 #
-# Usage: popup-interactive.sh <pane_id> <event_type> <message>
-#
-# Controls:
-#   Enter       — send typed line to target pane
-#   Escape      — dismiss popup
-#   Digits 1-9  — quick approve (type digit + Enter)
-#
-# Auto-close: detects Claude spinner chars → Claude resumed → closes popup
+# Usage: popup-interactive.sh <pane_id> <event_type> <message> [session_id]
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/helpers.sh"
 
-TARGET_PANE="${1:-}"
-EVENT_TYPE="${2:-unknown}"
-MESSAGE="${3:-Notification}"
+# --- Constants ---
 
-if [[ -z "$TARGET_PANE" ]]; then
-    echo "Usage: popup-interactive.sh <pane_id> [event_type] [message]"
-    exit 1
-fi
+SNOOZE_DURATIONS=(30 60 120 300 600 1800)
+SNOOZE_LABELS=("30s" "60s" "2m" "5m" "10m" "30m")
 
-# Read options
-REFRESH_INTERVAL=$(get_option "$OPTION_REFRESH_INTERVAL" "$DEFAULT_REFRESH_INTERVAL")
+# --- Functions ---
 
-# Spinner characters indicating Claude is working (not waiting for input)
-SPINNER_CHARS=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+_render() {
+    local target_pane="$1"
+    local event_type="$2"
+    local mode="$3"
+    local snooze_index="$4"
 
-# State
-LINE_BUFFER=""
-LAST_CAPTURE=""
-
-# --- Display Functions ---
-
-_get_terminal_size() {
     local rows cols
     rows=$(tput lines 2>/dev/null || echo 24)
     cols=$(tput cols 2>/dev/null || echo 80)
-    echo "$rows $cols"
-}
 
-_render() {
-    local rows cols
-    read -r rows cols < <(_get_terminal_size)
-
-    # Reserve lines: 1 for header, 1 for separator, 1 for input prompt, 1 for status
-    local content_rows=$((rows - 4))
+    # Reserve lines: 1 header, 1 separator, 1 action bar
+    local content_rows=$((rows - 3))
     if ((content_rows < 1)); then
         content_rows=1
     fi
 
-    # Move cursor home (no screen clear — avoids flicker)
-    printf '\033[H'
+    # Clear screen and move home
+    printf '\033[2J\033[H'
 
-    # Header — show window name + pane index for identification
+    # Header
     local window_info
-    window_info=$(tmux display-message -t "$TARGET_PANE" -p '#{window_name}:#{pane_index}' 2>/dev/null || echo "?:?")
-    local header=" ${EVENT_TYPE} | ${window_info} (${TARGET_PANE}) "
-    printf '\033[7m'  # reverse video
-    printf "%-${cols}s" "$header"
-    printf '\033[0m\n'
+    window_info=$(tmux display-message -t "$target_pane" -p '#{window_name}:#{pane_index}' 2>/dev/null || echo "?:?")
+    local header=" ${event_type} | ${window_info} "
+    printf '\033[7m%-*s\033[0m\n' "$cols" "$header"
 
-    # Capture target pane content (with ANSI colors)
+    # Capture target pane content (with ANSI colors) — read-only snapshot
     local capture
-    capture=$(tmux capture-pane -t "$TARGET_PANE" -p -e -S "-${content_rows}" 2>/dev/null) || {
-        printf '\033[2J\033[H'
-        printf '\033[31mPane %s no longer exists\033[0m\n' "$TARGET_PANE"
+    capture=$(tmux capture-pane -t "$target_pane" -p -e -S "-${content_rows}" 2>/dev/null) || {
+        printf '\033[31mPane %s no longer exists\033[0m\n' "$target_pane"
         sleep 1
-        exit 0
+        return 1
     }
-    LAST_CAPTURE="$capture"
 
-    # Display captured content (last N lines, each line padded to clear previous content)
+    # Display captured content
     local line_num=0
     while IFS= read -r line; do
-        printf '%s\033[K\n' "$line"
+        printf '%s\n' "$line"
         ((line_num++))
     done < <(echo "$capture" | tail -n "$content_rows")
-    # Clear any remaining lines from previous render
+    # Pad remaining lines
     while ((line_num < content_rows)); do
-        printf '\033[K\n'
+        printf '\n'
         ((line_num++))
     done
-
-    # Move to bottom area
-    printf '\033[%d;1H' "$((rows - 1))"
 
     # Separator
     printf '\033[90m'
     printf '%*s' "$cols" '' | tr ' ' '─'
     printf '\033[0m'
 
-    # Input prompt
+    # Action bar
     printf '\033[%d;1H' "$rows"
-    printf '\033[1m> \033[0m%s\033[K' "$LINE_BUFFER"
-}
-
-_check_pane_alive() {
-    tmux display-message -t "$TARGET_PANE" -p '#{pane_id}' &>/dev/null
-}
-
-_check_resumed() {
-    # Check if last capture contains spinner characters → Claude is working
-    # Uses bash array + pattern matching (portable, no grep -P needed)
-    if [[ -n "$LAST_CAPTURE" ]]; then
-        local char
-        for char in "${SPINNER_CHARS[@]}"; do
-            if [[ "$LAST_CAPTURE" == *"$char"* ]]; then
-                log_debug "popup-interactive: detected spinner, Claude resumed"
-                return 0  # resumed
-            fi
-        done
+    if [[ "$mode" == "snooze" ]]; then
+        printf '  Snooze: \033[1;33m%s\033[0m  [s] cycle  [Enter] confirm  [Esc] cancel' "${SNOOZE_LABELS[$snooze_index]}"
+    else
+        printf '  [Enter] Switch  [s] Snooze  [Esc/q] Dismiss'
     fi
-    return 1  # not resumed
+
+    # Reset attributes at end to avoid leaking state
+    printf '\033[0m'
 }
 
-_send_line() {
-    local line="$1"
-    if [[ -n "$line" ]]; then
-        # Send text + newline as a single literal string
-        # Using -l with embedded newline avoids tmux interpreting "Enter"
-        # as a key name (which can trigger copy-mode in vi-mode setups)
-        tmux send-keys -t "$TARGET_PANE" -l "${line}
-"
-        log_debug "popup-interactive: sent line to $TARGET_PANE: $line"
-    fi
-}
-
-# --- Signal handling ---
-
-_cleanup() {
+_EXITING=0
+_safe_exit() {
+    # Guard against re-entry from EXIT trap
+    if [[ "$_EXITING" -eq 1 ]]; then return; fi
+    _EXITING=1
+    local intent="$1"
     clear_active_pane
-    # Restore terminal
-    printf '\033[?25h'  # show cursor
+    # Write intent to file so popup-manager knows what to do.
+    # The actual window switch is handled by popup-manager AFTER the popup
+    # is fully closed, to avoid popup teardown interfering with the switch.
+    if [[ "$intent" != "dismiss" ]]; then
+        echo "$intent" > "${QUEUE_DIR}/popup-intent"
+    fi
+    printf '\033[0m\033[?25h\033[2J\033[H'
     tput cnorm 2>/dev/null || true
+    exit 0
 }
-trap _cleanup EXIT
 
-# --- Main Loop ---
+_write_snooze_request() {
+    local seconds="$1"
+    echo "$seconds" > "${QUEUE_DIR}/snooze-request"
+    log_debug "popup-interactive: snooze request ${seconds}s written"
+}
 
-# Mark this pane as active
-set_active_pane "$TARGET_PANE"
+# --- Main ---
 
-# Show cursor
-printf '\033[?25h'
+main() {
+    local target_pane="${1:-}"
+    local event_type="${2:-unknown}"
+    local message="${3:-Notification}"
+    local session_id="${4:-unknown}"
 
-# Flush any buffered input from terminal/popup setup
-# (display-popup can send escape sequences that would trigger immediate dismiss)
-sleep 0.3
-while IFS= read -rsn1 -t 0.01 _discard; do :; done
+    # Export to global for _safe_exit to access
+    _TARGET_PANE="$target_pane"
 
-# Initial render
-_render
-
-while true; do
-    # Read a single character with timeout
-    # IFS= prevents space/tab from being stripped by read
-    if IFS= read -rsn1 -t "$REFRESH_INTERVAL" char; then
-        case "$char" in
-            $'\e')  # Escape key — dismiss popup
-                log_debug "popup-interactive: dismissed by user"
-                exit 0
-                ;;
-            $'\n'|'')  # Enter — send buffer
-                if [[ -n "$LINE_BUFFER" ]]; then
-                    _send_line "$LINE_BUFFER"
-                    LINE_BUFFER=""
-                fi
-                ;;
-            $'\x7f'|$'\b')  # Backspace
-                if [[ -n "$LINE_BUFFER" ]]; then
-                    LINE_BUFFER="${LINE_BUFFER%?}"
-                fi
-                ;;
-            *)
-                LINE_BUFFER+="$char"
-                ;;
-        esac
+    if [[ -z "$target_pane" ]]; then
+        echo "Usage: popup-interactive.sh <pane_id> [event_type] [message] [session_id]"
+        exit 1
     fi
 
-    # Refresh display
-    if ! _check_pane_alive; then
-        printf '\033[2J\033[H'
-        printf '\033[31mPane %s no longer exists. Closing...\033[0m\n' "$TARGET_PANE"
-        sleep 1
-        exit 0
-    fi
+    trap '_safe_exit dismiss' EXIT
 
-    _render
+    set_active_pane "$target_pane"
 
-    # Check if Claude resumed (spinner detected)
-    if _check_resumed; then
-        printf '\033[2J\033[H'
-        printf '\033[32mClaude resumed working. Auto-closing...\033[0m\n'
-        sleep 0.5
-        exit 0
-    fi
-done
+    # Flush any buffered input from popup setup
+    sleep 0.3
+    while IFS= read -rsn1 -t 0.01 _discard; do :; done
+
+    local mode="normal"
+    local snooze_index=0
+
+    # Render once
+    _render "$target_pane" "$event_type" "$mode" "$snooze_index" || _safe_exit "dismiss"
+
+    # Wait for input — no continuous refresh, no escape sequence output during wait
+    while true; do
+        local char=""
+        if IFS= read -rsn1 -t 10 char; then
+            case "$char" in
+                $'\e')
+                    # Distinguish standalone Escape from escape sequences
+                    local seq=""
+                    if IFS= read -rsn1 -t 0.05 next_char; then
+                        seq="$next_char"
+                        while IFS= read -rsn1 -t 0.01 extra; do
+                            seq+="$extra"
+                        done
+                        log_debug "popup-interactive: ignored escape sequence: ESC+${seq}"
+                    else
+                        if [[ "$mode" == "snooze" ]]; then
+                            mode="normal"
+                            _render "$target_pane" "$event_type" "$mode" "$snooze_index" || _safe_exit "dismiss"
+                        else
+                            log_debug "popup-interactive: dismissed by user (Escape)"
+                            _safe_exit "dismiss"
+                        fi
+                    fi
+                    ;;
+                $'\n'|'')  # Enter
+                    if [[ "$mode" == "snooze" ]]; then
+                        _write_snooze_request "${SNOOZE_DURATIONS[$snooze_index]}"
+                        log_debug "popup-interactive: snooze confirmed (${SNOOZE_LABELS[$snooze_index]})"
+                        _safe_exit "snooze"
+                    else
+                        log_debug "popup-interactive: switch to window (pane=$target_pane)"
+                        _safe_exit "switch"
+                    fi
+                    ;;
+                q)
+                    if [[ "$mode" == "snooze" ]]; then
+                        mode="normal"
+                        _render "$target_pane" "$event_type" "$mode" "$snooze_index" || _safe_exit "dismiss"
+                    else
+                        log_debug "popup-interactive: dismissed by user (q)"
+                        _safe_exit "dismiss"
+                    fi
+                    ;;
+                s)
+                    if [[ "$mode" == "normal" ]]; then
+                        mode="snooze"
+                        snooze_index=0
+                    else
+                        snooze_index=$(( (snooze_index + 1) % ${#SNOOZE_DURATIONS[@]} ))
+                    fi
+                    _render "$target_pane" "$event_type" "$mode" "$snooze_index" || _safe_exit "dismiss"
+                    ;;
+                *)
+                    ;;
+            esac
+        else
+            # Timeout (10s) — re-render to update preview and check pane alive
+            if ! tmux display-message -t "$target_pane" -p '#{pane_id}' &>/dev/null; then
+                log_debug "popup-interactive: pane $target_pane died"
+                _safe_exit "dismiss"
+            fi
+            _render "$target_pane" "$event_type" "$mode" "$snooze_index" || _safe_exit "dismiss"
+        fi
+    done
+}
+
+main "$@"

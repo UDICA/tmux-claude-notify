@@ -161,27 +161,27 @@ cleanup_popup
 sleep 0.3
 
 # ============================================================
-# Test 2: Input forwarding — typed text is sent to target pane via send-keys
+# Test 2: Enter key — writes "switch" intent file
 # ============================================================
 echo ""
-echo "--- Test 2: Input forwarding ---"
+echo "--- Test 2: Enter writes switch intent ---"
 
-rm -f "$SENDKEYS_LOG"
+intent_file="${QUEUE_DIR}/popup-intent"
+rm -f "$intent_file"
 
-# Writer: wait 1.5s, then type "yes" + Enter
-launch_popup_with_input "$TARGET_PANE" permission "forward test" \
-    "sleep 1.5; printf 'yes'; sleep 0.2; printf \$'\\\\n'; sleep 3"
+# Writer: wait 1.5s then send Enter
+launch_popup_with_input "$TARGET_PANE" permission "enter test" \
+    "sleep 1.5; printf \$'\\\\n'"
 
-# Wait for popup to process input
-sleep 3.0
+sleep 1.5
+poll_proc_exit "$POPUP_PID" 4
+wait "$POPUP_PID" 2>/dev/null
+
+intent=$(cat "$intent_file" 2>/dev/null || echo "none")
+assert "Enter key writes switch intent" '[[ "$intent" == "switch" ]]'
+rm -f "$intent_file"
+
 cleanup_popup
-
-# Verify send-keys was called with "yes" content
-sk_log=$(cat "$SENDKEYS_LOG" 2>/dev/null || true)
-assert "input forwarding calls send-keys with typed text" '[[ "$sk_log" == *"yes"* ]]'
-assert "input forwarding sends Enter key" '[[ "$sk_log" == *"Enter"* ]]'
-
-rm -f "$SENDKEYS_LOG"
 
 # ============================================================
 # Test 3: Escape dismissal — Escape key exits popup-interactive
@@ -206,32 +206,38 @@ fi
 cleanup_popup
 
 # ============================================================
-# Test 4: Backspace — backspace deletes last char, correct text sent via send-keys
+# Test 4: q key — exits with code 0 (dismiss) and snooze mode
 # ============================================================
 echo ""
-echo "--- Test 4: Backspace handling ---"
+echo "--- Test 4: q dismiss and snooze Enter ---"
 
-rm -f "$SENDKEYS_LOG"
+# Test q dismiss
+launch_popup_with_input "$TARGET_PANE" permission "q test" \
+    "sleep 1.5; printf 'q'"
 
-# Writer: type "abc", backspace (0x7f), then Enter — expect "ab" to be sent
-launch_popup_with_input "$TARGET_PANE" permission "backspace test" \
-    "sleep 1.5; printf 'abc'; sleep 0.2; printf \$'\\\\x7f'; sleep 0.2; printf \$'\\\\n'; sleep 3"
+sleep 1.5
+poll_proc_exit "$POPUP_PID" 4
+wait "$POPUP_PID" 2>/dev/null
+q_exit=$?
+assert "q key exits with code 0 (dismiss)" '[[ "$q_exit" -eq 0 ]]'
 
-# Wait for popup to process input
-sleep 3.5
 cleanup_popup
+sleep 0.3
 
-# Verify send-keys was called with "ab" (not "abc" — backspace deleted 'c')
-sk_log=$(cat "$SENDKEYS_LOG" 2>/dev/null || true)
-# Check that "ab" appears as a -l argument (literal send) and "abc" does not
-sk_has_ab=0
-sk_has_abc=0
-if echo "$sk_log" | grep -q '\-l ab'; then sk_has_ab=1; fi
-if echo "$sk_log" | grep -q '\-l abc'; then sk_has_abc=1; fi
-assert "backspace: send-keys called with 'ab' after backspace" '[[ "$sk_has_ab" -eq 1 ]]'
-assert "backspace: 'abc' not sent (backspace worked)" '[[ "$sk_has_abc" -eq 0 ]]'
+# Test snooze: press s then Enter → writes snooze intent
+rm -f "$intent_file"
+launch_popup_with_input "$TARGET_PANE" permission "snooze test" \
+    "sleep 1.5; printf 's'; sleep 0.3; printf \$'\\\\n'"
 
-rm -f "$SENDKEYS_LOG"
+sleep 2.5
+poll_proc_exit "$POPUP_PID" 4
+wait "$POPUP_PID" 2>/dev/null
+
+intent=$(cat "$intent_file" 2>/dev/null || echo "none")
+assert "s + Enter writes snooze intent" '[[ "$intent" == "snooze" ]]'
+rm -f "$intent_file"
+
+cleanup_popup
 
 # ============================================================
 # Test 5: Dead pane auto-close — popup exits when target pane dies
@@ -249,11 +255,15 @@ launch_popup_with_input "$TEMP_PANE" permission "dead pane test" "sleep 30"
 
 sleep 1.5
 
-# Kill the temp pane
+# Kill the temp pane — popup checks on next render (which happens on
+# the 10s read timeout). But _render also fails immediately when
+# capture-pane can't find the pane, so the popup exits.
 tmux kill-pane -t "$TEMP_PANE" 2>/dev/null || true
 sleep 0.5
 
-if poll_proc_exit "$POPUP_PID" 6; then
+# Dead pane detection now happens on the 10s read timeout, so we
+# need a longer poll window
+if poll_proc_exit "$POPUP_PID" 15; then
     echo -e "${GREEN}PASS${NC}: popup-interactive auto-closes when target pane dies"
     ((PASS++))
 else
@@ -264,32 +274,29 @@ fi
 cleanup_popup
 
 # ============================================================
-# Test 6: Spinner auto-close — popup exits when spinner detected
+# Test 6: Snooze file written on snooze exit
 # ============================================================
 echo ""
-echo "--- Test 6: Spinner auto-close ---"
+echo "--- Test 6: Snooze request file ---"
 
-# Clear prior content from target pane
-write_to_pane "$TARGET_TTY" ""
+snooze_file="${QUEUE_DIR}/snooze-request"
+rm -f "$snooze_file"
 
-# Writer: keep popup open indefinitely
-launch_popup_with_input "$TARGET_PANE" permission "spinner test" "sleep 30"
+# Writer: press s (enter snooze mode), then s again (cycle to 60s), then Enter (confirm)
+launch_popup_with_input "$TARGET_PANE" permission "snooze file test" \
+    "sleep 1.5; printf 's'; sleep 0.3; printf 's'; sleep 0.3; printf \$'\\\\n'"
 
-sleep 1.5
+sleep 3.0
+cleanup_popup
 
-# Write spinner character to target pane
-write_to_pane "$TARGET_TTY" "⠋ Processing..."
-sleep 0.5
-
-if poll_proc_exit "$POPUP_PID" 6; then
-    echo -e "${GREEN}PASS${NC}: popup-interactive auto-closes on spinner detection"
-    ((PASS++))
+if [[ -f "$snooze_file" ]]; then
+    snooze_val=$(cat "$snooze_file")
+    assert "snooze request file written with 60s" '[[ "$snooze_val" -eq 60 ]]'
 else
-    echo -e "${RED}FAIL${NC}: popup-interactive did not exit after spinner appeared"
+    echo -e "${RED}FAIL${NC}: snooze request file not created"
     ((FAIL++))
 fi
-
-cleanup_popup
+rm -f "$snooze_file"
 
 # ============================================================
 # Test 7: Concurrent handlers — 3 simultaneous notification-handler.sh

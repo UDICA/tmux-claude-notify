@@ -1,14 +1,14 @@
 # tmux-claude-notify
 
-Interactive tmux popups for Claude Code permission prompts. Never miss a waiting approval again.
+Tmux popup notifications for Claude Code. Never miss a waiting permission prompt or completed task again.
 
 ## Problem
 
-When running multiple Claude Code sessions across tmux windows/panes, permission prompts block silently. You switch to another window and return minutes later only to find Claude was waiting for approval the entire time.
+When running multiple Claude Code sessions across tmux windows/panes, permission prompts and task completions happen silently. You switch to another window and return minutes later only to find Claude was waiting for approval — or finished long ago.
 
 ## Solution
 
-This plugin watches for Claude Code notifications and shows an interactive tmux popup wherever you are, letting you approve/respond without switching windows. When Claude resumes working, the popup auto-closes.
+This plugin watches for Claude Code events and shows a tmux popup wherever you are. The popup displays a read-only preview of Claude's pane and lets you switch to it, snooze, or dismiss.
 
 ## Requirements
 
@@ -66,13 +66,17 @@ If you prefer, add these hooks to `~/.claude/settings.json` manually:
     "Notification": [
       {
         "matcher": "",
-        "command": "~/.tmux/plugins/tmux-claude-notify/scripts/notification-handler.sh"
+        "hooks": [
+          {"type": "command", "command": "~/.tmux/plugins/tmux-claude-notify/scripts/notification-handler.sh"}
+        ]
       }
     ],
     "Stop": [
       {
         "matcher": "",
-        "command": "~/.tmux/plugins/tmux-claude-notify/scripts/notification-handler.sh"
+        "hooks": [
+          {"type": "command", "command": "~/.tmux/plugins/tmux-claude-notify/scripts/notification-handler.sh"}
+        ]
       }
     ]
   }
@@ -81,22 +85,33 @@ If you prefer, add these hooks to `~/.claude/settings.json` manually:
 
 ## How It Works
 
-1. Claude Code fires a hook (Notification/Stop) when it needs attention
+1. Claude Code fires a hook (Notification or Stop) when it needs attention or finishes a task
 2. The handler reads JSON from stdin, walks the process tree to find the source tmux pane
 3. A notification is queued and a tmux bell fires (cross-window alert)
-4. An interactive popup opens showing the target pane's content
-5. You type a response -- it's sent to Claude via `send-keys`
-6. When Claude resumes (spinner detected), the popup auto-closes
-7. Next queued notification pops up automatically
+4. A popup opens showing a read-only preview of Claude's pane
+5. You choose: switch to Claude's window, snooze, or dismiss
+6. If the notification comes from a pane in your current window, a brief status bar message is shown instead of a popup
 
 ## Popup Controls
 
-| Key | Action |
-|-----|--------|
-| Type + Enter | Send text to Claude's pane |
-| Escape | Dismiss popup |
-| 1-9 + Enter | Quick number input (for menu selections) |
-| Backspace | Delete last character |
+| Key | Normal Mode | Snooze Mode |
+|-----|-------------|-------------|
+| Enter | Switch to Claude's window | Confirm snooze |
+| s | Enter snooze mode | Cycle duration (30s → 60s → 2m → 5m → 10m → 30m) |
+| Escape | Dismiss popup | Cancel snooze → normal mode |
+| q | Dismiss popup | Cancel snooze → normal mode |
+
+### Snooze
+
+Press `s` to enter snooze mode, then `s` again to cycle through durations. Press Enter to confirm — the notification is re-queued after the timer expires.
+
+## When Does the Popup Trigger?
+
+| Event | Hook | What it means |
+|-------|------|---------------|
+| Permission prompt | Notification | Claude is blocked waiting for your approval |
+| Task completion | Stop | Claude finished working — you can review and continue |
+| Error/failure | Stop | Claude hit an error and stopped |
 
 ## Options
 
@@ -108,7 +123,6 @@ set -g @claude-notify-bell 'on'              # Ring tmux bell (default: on)
 set -g @claude-notify-popup-width '80%'      # Popup width (default: 80%)
 set -g @claude-notify-popup-height '60%'     # Popup height (default: 60%)
 set -g @claude-notify-popup-border 'rounded' # Border style (default: rounded)
-set -g @claude-notify-refresh-interval '0.5' # Refresh rate in seconds (default: 0.5)
 set -g @claude-notify-stale-ttl '300'        # Queue entry TTL in seconds (default: 300)
 set -g @claude-notify-debug 'off'            # Debug logging (default: off)
 ```
@@ -136,22 +150,11 @@ tmux-claude-notify/
 │   ├── detect-pane.sh              # Process tree walker → finds source tmux pane
 │   ├── notification-handler.sh     # Called by Claude Code hooks (reads JSON stdin)
 │   ├── popup-manager.sh            # Single-instance queue consumer + popup lifecycle
-│   ├── popup-interactive.sh        # Runs inside popup: capture/display/input loop
+│   ├── popup-interactive.sh        # Runs inside popup: read-only preview + actions
 │   ├── status-count.sh             # Outputs pending count for status bar
 │   └── setup.sh                    # Claude Code settings.json configuration
-├── tests/
-│   ├── run_all.sh                  # Test orchestrator (timeouts, filtering, reporting)
-│   ├── test_phase1.sh              # Infrastructure: variables, helpers, queue, locking
-│   ├── test_phase2.sh              # Pane detection: PID tree walking
-│   ├── test_phase3.sh              # Notification handler: JSON parsing, queuing
-│   ├── test_phase4.sh              # Popup system: manager lifecycle, spinner detection
-│   ├── test_phase5.sh              # Setup: configuration modes, idempotency
-│   ├── test_unit.sh                # Unit: macOS mocks, queue edge cases, spinners
-│   ├── test_component.sh           # Component: TUI interaction, concurrent handlers
-│   └── test_integration.sh         # Integration: full-flow scenarios
-├── README.md
-├── LICENSE
-└── PLAN.md
+└── tests/
+    └── ...                         # 49+ automated tests across 8 files
 ```
 
 ### Data Flow
@@ -160,49 +163,26 @@ tmux-claude-notify/
 Claude Code (pane %42)
   → Hook fires → notification-handler.sh
     → Reads JSON, walks PID tree → finds pane %42
+    → Fixes copy mode if hook trigger caused it
     → Writes to file queue (/tmp/tmux-claude-notify-<uid>-<server_pid>/)
     → Fires tmux bell
     → Launches popup-manager.sh (single instance)
-      → Reads queue, opens display-popup
-        → popup-interactive.sh captures pane + handles input
-        → Detects spinner → auto-closes
+      → Reads queue, opens display-popup (or status message if same window)
+        → popup-interactive.sh shows read-only pane preview
+        → User action: switch / snooze / dismiss
         → Next queued notification pops up
 ```
 
-### Component Details
-
-**`variables.sh`** -- Central configuration. Defines all `@claude-notify-*` option names, their defaults, and derives the queue directory path from UID + tmux server PID. Path constants are non-readonly to allow test overrides.
-
-**`helpers.sh`** -- Core library sourced by all scripts. Queue operations (`push`/`pop`/`peek`/`count`/`clean_stale_entries`), portable locking (`flock` on Linux, `mkdir`-based on macOS), option reading, field parsing, and debug logging. Queue format uses `\x1f` (ASCII Unit Separator) as the field delimiter -- chosen because it cannot appear in human-readable text or tool inputs, unlike `|` which appears in shell pipelines.
-
-**`detect-pane.sh`** -- Solves a key problem: Claude Code hooks do not receive `$TMUX_PANE`. This script walks the process tree from its own PID upward (via `/proc` on Linux or `ps` on macOS), matching each ancestor against `tmux list-panes -a`, up to 20 levels deep. Can be sourced or run standalone.
-
-**`notification-handler.sh`** -- Entry point called by Claude Code hooks. Reads JSON from stdin via `jq`, extracts event type and tool information, calls `detect_pane` (falling back to the active pane), pushes to the queue, fires a bell, and launches `popup-manager.sh` via `nohup`/`disown` if one isn't already running.
-
-**`popup-manager.sh`** -- Single-instance queue consumer with an atomic singleton guard (check + PID write under the same lock to prevent TOCTOU races). Processes queue entries one at a time, opening `tmux display-popup -E` for each. Supports `--recheck` mode for the `after-client-attached` hook (handles detach/reattach recovery). Cleans stale entries (expired TTL, dead panes) on each cycle.
-
-**`popup-interactive.sh`** -- Runs inside the popup. Single-process event loop using `read -rsn1 -t $interval`: on timeout, refreshes the display by capturing the target pane with ANSI colors; on input, accumulates characters in a line buffer. Enter sends the buffer via `tmux send-keys -l`. Escape dismisses. Auto-closes when spinner characters (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) are detected in the captured output, indicating Claude resumed working.
-
-**`setup.sh`** -- Three modes: `--check-only` (silent, shows tmux message if hooks are unconfigured), `--configure` (interactive -- backs up settings.json, merges hooks via jq), `--show` (prints manual instructions).
-
-### Queue Design
-
-- **Directory**: `/tmp/tmux-claude-notify-<uid>-<server_pid>/`
-- **Queue file**: `queue` -- one entry per line: `timestamp\x1fpane_id\x1fevent_type\x1fsession_id\x1fmessage`
-- **Lock file**: `lock` -- `flock` (Linux) or `mkdir lock.d` (macOS)
-- **Active file**: `active` -- pane_id of current popup
-- **PID file**: `popup-pid` -- ensures single popup-manager instance
-- Stale entries (dead panes, expired TTL) cleaned on every queue read
-
 ### Key Design Decisions
 
-1. **Line-buffered input** (not char-by-char forwarding) -- prevents accidental input to Claude
-2. **Single-process popup** (not dual-process) -- avoids output interleaving
-3. **File-based queue** (not tmux options) -- survives detach, handles concurrent access
-4. **Process tree walking** (not PID registration) -- zero-configuration pane detection
-5. **`capture-pane` + `send-keys`** (not pane swapping) -- only viable approach for `display-popup`
-6. **tmux bell** (not platform-specific sounds) -- portable, terminal handles the actual sound
-7. **`\x1f` delimiter** (not `|`) -- ASCII Unit Separator cannot appear in tool inputs
+1. **Read-only popup** (not input forwarding) — avoids terminal state issues with Claude's TUI
+2. **Intent files** (not exit codes) — `display-popup -E` always exits 0 to prevent escape sequence leakage
+3. **Same-window detection** — shows a status bar message instead of a popup when Claude is in the current window, avoiding alternate screen buffer conflicts
+4. **Copy mode workaround** — Claude's hook mechanism can trigger copy mode on the pane; the plugin detects and exits it automatically
+5. **File-based queue** (not tmux options) — survives detach, handles concurrent access
+6. **Process tree walking** (not PID registration) — zero-configuration pane detection
+7. **tmux bell** (not platform-specific sounds) — portable, terminal handles the actual sound
+8. **`\x1f` delimiter** (not `|`) — ASCII Unit Separator cannot appear in tool inputs
 
 ## Running Tests
 
@@ -220,22 +200,7 @@ bash tests/run_all.sh --filter phase1       # only phase 1
 bash tests/run_all.sh --filter integration  # only integration tests
 ```
 
-All tests use isolated tmux servers (unique socket per test file) and never touch the user's live session. Each test file creates and destroys its own server.
-
-### Test Coverage
-
-126 automated tests across 8 files:
-
-| File | Tests | Scope |
-|------|-------|-------|
-| test_phase1.sh | 29 | Variables, helpers, queue ops, locking, plugin load |
-| test_phase2.sh | 9 | PID tree walking, pane detection |
-| test_phase3.sh | 8 | JSON parsing, notification queuing, disabled plugin |
-| test_phase4.sh | 11 | Popup manager, stale cleanup, spinner detection |
-| test_phase5.sh | 14 | Setup modes, configure, check-only, idempotency |
-| test_unit.sh | 21 | macOS locking/PID mocks, queue edge cases, special chars |
-| test_component.sh | 15 | Popup TUI, concurrent handlers, bell, pane fallback |
-| test_integration.sh | 19 | Full lifecycle, FIFO order, reattach, disable toggle |
+All tests use isolated tmux servers and never touch the user's live session.
 
 ## Troubleshooting
 

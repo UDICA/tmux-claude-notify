@@ -81,6 +81,18 @@ if [[ "$bell_on" == "on" ]]; then
     tmux run-shell -t "$pane_id" "printf '\\a'" 2>/dev/null || true
 fi
 
+# --- Fix copy mode caused by hook invocation ---
+# Claude Code's hook mechanism can put the pane into copy mode.
+# Detect and exit it so the user sees a normal pane when they switch.
+(
+    sleep 0.5
+    in_mode=$(tmux display-message -t "$pane_id" -p '#{pane_in_mode}' 2>/dev/null || echo "0")
+    if [[ "$in_mode" == "1" ]]; then
+        tmux send-keys -t "$pane_id" q 2>/dev/null || true
+        log_debug "notification-handler: exited copy mode on pane $pane_id"
+    fi
+) &
+
 # --- Launch popup manager if not running ---
 
 if ! is_popup_manager_running; then

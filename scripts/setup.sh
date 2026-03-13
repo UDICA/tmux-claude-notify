@@ -71,9 +71,20 @@ _show_manual_instructions() {
             {"type": "command", "command": "${HANDLER_PATH}"}
           ]
         }
+      ],
+      "Stop": [
+        {
+          "matcher": "",
+          "hooks": [
+            {"type": "command", "command": "${HANDLER_PATH}"}
+          ]
+        }
       ]
     }
   }
+
+  Notification: fires when Claude needs input (e.g. permission prompts)
+  Stop: fires when Claude finishes a task or hits an error
 
   The handler reads JSON from stdin (provided by Claude Code)
   and creates tmux notifications automatically.
@@ -151,6 +162,14 @@ _configure() {
     hooks_json=$(cat <<HOOKS
 {
   "Notification": [
+    {
+      "matcher": "",
+      "hooks": [
+        {"type": "command", "command": "${HANDLER_PATH}"}
+      ]
+    }
+  ],
+  "Stop": [
     {
       "matcher": "",
       "hooks": [
