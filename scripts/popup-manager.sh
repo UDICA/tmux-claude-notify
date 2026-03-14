@@ -92,7 +92,14 @@ _process_queue() {
         if [[ "$pane_window_id" == "$current_window_id" ]]; then
             log_debug "popup-manager: pane $pane_id is in current window, using message instead of popup"
             tmux display-message "Claude needs attention in pane ${pane_id} (${event_type})" 2>/dev/null || true
-            sleep 0.2
+            # Exit copy mode if the hook trigger caused it
+            sleep 0.5
+            local in_mode_same
+            in_mode_same=$(tmux display-message -t "$pane_id" -p '#{pane_in_mode}' 2>/dev/null || echo "0")
+            if [[ "$in_mode_same" == "1" ]]; then
+                tmux send-keys -t "$pane_id" q 2>/dev/null || true
+                log_debug "popup-manager: exited copy mode on same-window pane $pane_id"
+            fi
             continue
         fi
 
