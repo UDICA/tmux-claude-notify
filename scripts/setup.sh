@@ -40,16 +40,18 @@ _has_hook_configured() {
     # Check if our handler is already referenced in hooks
     # Supports both old format (.command at top level) and new format (.hooks[].command)
     jq -e '
-        (.hooks // {}) |
-        to_entries[] |
-        .value[] |
-        (
-            # New format: matcher + hooks array
-            (.hooks // [] | .[].command // empty),
-            # Old format: matcher + command
-            (.command // empty)
-        ) |
-        test("notification-handler")
+        [
+            (.hooks // {}) |
+            to_entries[] |
+            .value[] |
+            (
+                # New format: matcher + hooks array
+                (.hooks // [] | .[].command // empty),
+                # Old format: matcher + command
+                (.command // empty)
+            ) |
+            test("notification-handler")
+        ] | any
     ' "$settings_file" &>/dev/null
 }
 
